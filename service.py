@@ -1,10 +1,9 @@
 import json
-
+from datetime import datetime
 from flask import Flask, request, jsonify
 from flask_restx import Resource, Api, fields
 from flask_sqlalchemy import SQLAlchemy
 import requests
-import time
 import re
 
 
@@ -28,20 +27,18 @@ class ActorsInfo(db.Model):
     __tablename__ = 'actors_info'
     id = db.Column(db.Integer, autoincrement=True, primary_key=True, index=True)
     tvmaze_id = db.Column(db.Integer)
-    name = db.Column(db.String(), unique=True, index=True)
+    name = db.Column(db.String())
     country = db.Column(db.String())
-    birthday = db.Column(db.String())
-    deathday = db.Column(db.String())
+    birthday = db.Column(db.DateTime())
+    deathday = db.Column(db.DateTime())
     gender = db.Column(db.String())
-    last_update = db.Column(db.String())
-    show = db.Column(db.String())
+    last_update = db.Column(db.DateTime(), default=datetime.now())
+    shows = db.Column(db.String())
 
 
 # --------------------------------------------------------------------------------------------------
 # API for Q1
 # --------------------------------------------------------------------------------------------------
-
-# ------Utility Functions---------------------------------------------------------------------------
 def request_data(url):
     try:
         data = requests.get(url).json()
@@ -58,55 +55,53 @@ def check_vaild_name(input_name ,name_list):
 
 def get_show_list(id):
     show_pack = request_data(f'https://api.tvmaze.com/people/{id}/castcredits?embed=show')
-    if not show_pack: return {}
-    show_list = {}
+    if not show_pack: return None
+    show_list = []
     for item in show_pack:
-        show_list[item['_embedded']['show']['id']] = item['_embedded']['show']['name']
-    return show_list
+        show_list.append(item['_embedded']['show']['name'])
+    return '@%'.join(show_list)
 
 @api.route('/actors',
            doc={'params': {'name': 'Actors_name, eg: Brad Pitt'},
-                'responses': {200: 'OK', 201: 'Created', 403: 'Forbidden', 404: 'Not Found'}
-})
-# ------------------------------------------------------------------------------------------------
-
-# -----Main API function--------------------------------------------------------------------------
-
+                'responses': {200: 'OK', 201: 'Created', 403: 'Forbidden', 404: 'Not Found'}})
 class Actors(Resource):
     def post(self):
-        actor = request.args.get('name')
+        # actor = request.args.get('name')
+        actor = request.form.get('name')
         actor_name = re.sub('-|_', ' ', actor)
         req_dict = request_data(f'https://api.tvmaze.com/search/people?q={actor_name}')
         if not req_dict: return  {'message': 'The actor is not found'}, 404
         if check_vaild_name(actor_name,req_dict):
             ac_info = req_dict[0]['person']
-            if not ActorsInfo.query.get(ac_info['id']):
-                now = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
-                show_list = json.dumps(get_show_list(ac_info['id']))
-                if ac_info['country']:
-                    country = ac_info['country']['name']
-                else:
-                    country = None
-                try:
-                    data = ActorsInfo(tvmaze_id=ac_info['id'],
-                                      name=ac_info['name'],
-                                      country=country,
-                                      birthday=ac_info['birthday'],
-                                      deathday=ac_info['deathday'],
-                                      gender=ac_info['gender'],
-                                      last_update=now,
-                                      show=show_list)
-                    db.session.add(data)
-                    db.session.commit()
-                except Exception:
-                    return {'message': 'Database Error'}, 403
+            show_list = get_show_list(ac_info['id'])
+            birthday, deathday = None, None
+            if ac_info['birthday']:
+                birthday = datetime.strptime(ac_info['birthday'], '%Y-%m-%d')
+            if ac_info['deathday']:
+                deathday = datetime.strptime(ac_info['deathday'], '%Y-%m-%d')
+            if ac_info['country']:
+                country = ac_info['country']['name']
+            else:
+                country = None
+            now = datetime.now()
+            try:
+                data = ActorsInfo(tvmaze_id=ac_info['id'],
+                                  name=ac_info['name'],
+                                  country=country,
+                                  birthday=birthday,
+                                  deathday=deathday,
+                                  gender=ac_info['gender'],
+                                  last_update=now,
+                                  shows=show_list)
+                db.session.add(data)
+                db.session.commit()
                 pack = {'id': ac_info['id'],
-                        'last-update': str(now),
+                        'last-update': str(datetime.strftime(now, "%Y-%m-%d %H:%M:%S")),
                         '_links': {'self': {
                             'href': f"http://{default_host}:{default_port}/actors/{ac_info['id']}"
                         }}}
                 return pack, 201
-            else:
+            except:
                 return {'message': 'Actor already in database'}, 200
         else:
             return {'message': 'The actor is not found'}, 404
@@ -122,18 +117,32 @@ resource_fields = api.model('Resource', {
     "shows": fields.List(fields.String,example=['show1', 'show2', 'show3'])
 })
 
+def time_to_str(time_obj, is_Sec=False):
+    if not time_obj: return None
+    if is_Sec:
+        return datetime.strftime(time_obj, "%Y-%m-%d %H:%M:%S")
+    return datetime.strftime(time_obj, "%Y-%m-%d")
+
+def str_to_time(str):
+    if not str: return None
+    return datetime.strptime(str, "%Y-%m-%d")
+
 def create_response(actor):
-    show_list = list(json.loads(actor.show).values())
+    show_list = None
+    if actor.shows:
+        show_list = actor.shows.split('@%')
     links = {'self':{'href': f"http://{default_host}:{default_port}/actors/{actor.id}"}}
-    if ActorsInfo.query.get(int(actor.id) - 1):
-        prev = f"http://{default_host}:{default_port}/actors/{int(actor.id)-1}"
+    next_link = ActorsInfo.query.order_by('id').filter(ActorsInfo.id > actor.id).first()
+    prev_link = ActorsInfo.query.order_by(ActorsInfo.id.desc()).filter(ActorsInfo.id < actor.id).first()
+    if prev_link:
+        prev = f"http://{default_host}:{default_port}/actors/{prev_link.id}"
         links['previous'] = {'href': prev}
-    if ActorsInfo.query.get(int(actor.id) + 1):
-        next = f"http://{default_host}:{default_port}/actors/{int(actor.id)+1}"
+    if next_link:
+        next = f"http://{default_host}:{default_port}/actors/{next_link.id}"
         links['next'] = {'href': next}
-    pack = {'id': actor.id, 'last-update': actor.last_update,
+    pack = {'id': actor.id, 'last-update': time_to_str(actor.last_update, True),
             'name': actor.name, 'country': actor.country,
-            'birthday': actor.birthday, 'deathday': actor.deathday,
+            'birthday': time_to_str(actor.birthday), 'deathday': time_to_str(actor.deathday),
             'shows': show_list,
             '_links': links}
     return pack
@@ -165,21 +174,39 @@ class Actors(Resource):
             return {'message': f'The actor with id {id} was removed from the database!',
                     'id': id}, 200
         except Exception:
-            return {'message': 'id can only be a number'}, 400
+            return {'message': 'Bad Request'}, 400
 
     @api.doc(body=resource_fields)
     def patch(self, id):
         try:
-            int(id)
-            actor = ActorsInfo.query.get(id)
-            if not actor:
-                return {'message': 'The actor is not found'}, 404
-            pack = create_response(actor)
-            return pack, 200
-        except Exception:
-            return {'message': 'id can only be a number'}, 400
-
-
+            data = json.loads(request.data)
+            actor = ActorsInfo.query.filter_by(id=id)
+            isChanged = False
+            for i in ['name', 'country', 'birthday', 'deathday', 'shows']:
+                if data.get(i):
+                    if i == 'birthday' or i == 'deathday':
+                        actor.update({i: str_to_time(data[i])})
+                        isChanged = True
+                    elif i == 'shows':
+                        actor.update({i: "@%".join(data[i])})
+                        isChanged = True
+                    else:
+                        actor.update({i: data[i]})
+                        isChanged = True
+            if isChanged:
+                now = datetime.now()
+                actor.update({'last_update': now})
+                db.session.commit()
+                pack = {'id': id,
+                        'last-update': str(datetime.strftime(now, "%Y-%m-%d %H:%M:%S")),
+                        '_links': {'self': {
+                            'href': f"http://{default_host}:{default_port}/actors/{id}"
+                        }}}
+                return pack, 200
+            else:
+                return {'message': 'No changes have been made.'}, 200
+        except:
+            return {'message': 'Input data is not accepted'}, 400
 
 
 if __name__ == '__main__':
