@@ -5,6 +5,7 @@ from flask_restx import Resource, Api, fields, reqparse
 from flask_sqlalchemy import SQLAlchemy
 import requests
 import re
+import pandas as pd
 
 
 # --------------------------------------------------------------------------------------------------
@@ -32,16 +33,17 @@ q4_payload = api.model('Resource', {
 })
 
 q5_param = reqparse.RequestParser()
-q5_param.add_argument('order', type=str, help="Attribute names with signal of + -, eg: +name,+id")
-q5_param.add_argument('page', type=int, help="Which page to display, eg: 1")
-q5_param.add_argument('size', type=int, help="Shows the number of actors per page, eg: 1")
-q5_param.add_argument('filter', type=str, help="Shows what attribute should be shown for each actor, eg: id,name")
+q5_param.add_argument('order', type=str, help="Attribute names with signal of + -.\neg: +name,+id")
+q5_param.add_argument('page', type=int, help="Which page to display,\neg: 1")
+q5_param.add_argument('size', type=int, help="Shows the number of actors per page,\neg: 10")
+q5_param.add_argument('filter', type=str, help="Shows what attribute should be shown for each actor,\neg: id,name")
 
 q6_param = reqparse.RequestParser()
 q6_param.add_argument('format', type=str,
-                      help='The expected output format, can be either "json" or "image"', required=True)
+                      help='The expected output format, can be either "json" or "image"\neg: json', required=True)
 q6_param.add_argument('by', type=str,
-                      help="Actor's attributes, can only be chosen from the list [country, birthday, gender, and life_status]",
+                      help="Actor's attributes, can only be chosen from the list [country, birthday, gender, and life_status]\n"
+                           "eg: country,gender",
                       required=True)
 
 # --------------------------------------------------------------------------------------------------
@@ -123,6 +125,22 @@ def create_response(actor):
             'shows': show_list,
             '_links': links}
     return pack
+
+def datetime_to_year(value):
+    if value != 0:
+        return int(value.strftime("%Y"))
+    return 0
+
+def get_age(value):
+    if value > 0 and value < 120:
+        return value
+    if value < 0:
+        return int(datetime.now().strftime('%Y')) + value
+
+def get_update_hour(value):
+    if value:
+        diff = datetime.now() - value
+        return diff.days
 
 # --------------------------------------------------------------------------------------------------
 # API for Q1 and Q5
@@ -332,8 +350,70 @@ class Actors(Resource):
         """ Question 6  Get the statistics of the existing Actors
         """
         args = q6_param.parse_args()
-        print(args)
-        pass
+        attribute_list = ['country', 'birthday', 'gender', 'life_status']
+        form = args['format']
+        input_list = args['by'].replace(' ', '').split(',')
+        for i in input_list:
+            if not i in attribute_list:
+                return {'message': 'Input data is invalid'}, 400
+
+        df_total = pd.DataFrame(db.session.query(ActorsInfo.id, ActorsInfo.last_update).all(),
+                                       columns=['id', 'last_update'])
+        df_total['update_hour'] = df_total['last_update'].apply(lambda x: get_update_hour(x))
+        total_update = df_total['update_hour'][df_total['update_hour']<1].count()
+        total = df_total['id'].count()
+        pack = {}
+        if form == 'json':
+            pack['total'] = int(total)
+            pack['total-updated'] = int(total_update)
+        if 'country' in input_list:
+            df_country = pd.DataFrame(db.session.query(ActorsInfo.country).all(), columns=['country'])
+            country_count = df_country['country'].count()
+            df_country = df_country.groupby('country')['country'].count().reset_index(name='count')
+            df_country['fq'] = df_country['count'] / country_count*100
+            df_country = df_country.sort_values(by='fq', ascending=False)
+            df_country = df_country.round(1)
+            if form == 'json':
+                country_dict = df_country.drop(columns='count').set_index('country').to_dict()['fq']
+                pack['by-country'] = country_dict
+        if 'gender' in input_list:
+            df_gender = pd.DataFrame(db.session.query(ActorsInfo.gender).all(), columns=['gender'])
+            gender_count = df_gender['gender'].count()
+            df_gender = df_gender.groupby('gender')['gender'].count().reset_index(name='count')
+            df_gender['percent'] = df_gender['count']/gender_count*100
+            df_gender['percent'].round(decimals=1)
+            if form == 'json':
+                gender_dict = df_gender.drop(columns='count').set_index('gender').to_dict()['percent']
+                pack['by-gender'] = {'Female': float(format(gender_dict['Female'], '.1f')),
+                                     'Male': float(format(gender_dict['Male'], '.1f'))}
+        if 'birthday' in input_list:
+            df_birthday = pd.DataFrame(db.session.query(ActorsInfo.birthday, ActorsInfo.deathday).all(),
+                                       columns=['birthday', 'deathday']).fillna(0)
+            df_birthday['birthday'] = df_birthday['birthday'].apply(lambda x: datetime_to_year(x))
+            df_birthday['deathday'] = df_birthday['deathday'].apply(lambda x: datetime_to_year(x))
+            df_birthday['age'] = df_birthday['deathday'] - df_birthday['birthday']
+            df_birthday['age'] = df_birthday['age'].apply(lambda x: get_age(x))
+            df_birthday.drop(columns=['birthday', 'deathday'], inplace=True)
+            df_birthday.dropna(inplace=True)
+            age_max = df_birthday['age'].max()
+            age_min = df_birthday['age'].min()
+            age_avg = df_birthday['age'].mean()
+            age_mid = df_birthday['age'].median()
+            if form == 'json':
+                age_dict = {'max_age': df_birthday['age'].max(), 'min_age': df_birthday['age'].min(),
+                        'average_age': float(format(df_birthday['age'].mean(), '.1f')), 'median_age':df_birthday['age'].median()}
+                pack['by-birthday'] = age_dict
+        if 'life_status' in input_list:
+            df_deathday = pd.DataFrame(db.session.query(ActorsInfo.id, ActorsInfo.deathday).all(),
+                                       columns=['id', 'deathday'])
+            alive_ratio = (1 - df_deathday.count()['deathday'] / df_deathday.count()['id'])*100
+            if form == 'json':
+                pack['by-life_status'] = {'Actors alive': float(format(alive_ratio, '.1f'))}
+
+        if form == 'json':
+            return pack, 200
+
+
 
 
 
