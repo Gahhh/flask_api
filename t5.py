@@ -4,8 +4,9 @@ import json
 
 
 def add_database(route):
-    actor_id_list = np.random.choice(10000, 500, replace=False)
+    actor_id_list = np.random.choice(100000, 5000, replace=False)
     for actor_id in actor_id_list:
+        print(actor_id)
         actor_url = 'https://api.tvmaze.com/people/' + str(actor_id)
         actor_info = requests.get(actor_url)
         if actor_info.status_code == 200:
@@ -16,5 +17,5 @@ def add_database(route):
 
 if __name__ == '__main__':
     # set url to your own route
-    url = "http://127.0.0.1:5000/actors"
+    url = "http://192.168.50.204:8000/actors"
     add_database(url)

@@ -4,7 +4,7 @@ import json
 
 
 def add_database(route):
-    actor_id_list = np.random.choice(50000, 5000, replace=False)
+    actor_id_list = np.random.choice(300000, 500, replace=False)
     for actor_id in actor_id_list:
         print(actor_id)
         actor_url = 'https://api.tvmaze.com/people/' + str(actor_id)

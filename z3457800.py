@@ -1,7 +1,6 @@
 import json
 from datetime import datetime
-
-from flask import Flask, request, Response, send_file, jsonify
+from flask import Flask, request, send_file
 from flask_restx import Resource, Api, fields, reqparse
 from flask_sqlalchemy import SQLAlchemy
 import requests
@@ -9,8 +8,6 @@ import re
 import pandas as pd
 import matplotlib.pyplot as plt
 from io import BytesIO
-import base64
-
 
 # --------------------------------------------------------------------------------------------------
 # Initialise the flask framework
@@ -33,14 +30,15 @@ q4_payload = api.model('Resource', {
     "country": fields.String(example="America"),
     "birthday": fields.String(example="1979-07-17"),
     "deathday": fields.String(example="2021-04-24"),
+    "gender": fields.String(example="Female"),
     "shows": fields.List(fields.String,example=['show1', 'show2', 'show3'])
 })
 
 q5_param = reqparse.RequestParser()
-q5_param.add_argument('order', type=str, help="Attribute names with signal of + -.\neg: +name,+id")
-q5_param.add_argument('page', type=int, help="Which page to display,\neg: 1")
-q5_param.add_argument('size', type=int, help="Shows the number of actors per page,\neg: 10")
-q5_param.add_argument('filter', type=str, help="Shows what attribute should be shown for each actor,\neg: id,name")
+q5_param.add_argument('order', type=str, help="Attribute names with signal of + -.\neg: +name,+id (Default: +name, +id)")
+q5_param.add_argument('page', type=int, help="Which page to display,\neg: 1 (Default: 1)")
+q5_param.add_argument('size', type=int, help="Shows the number of actors per page,\neg: 10 (Default: 10)")
+q5_param.add_argument('filter', type=str, help="Shows what attribute should be shown for each actor,\neg: id,name (Default: id, name)")
 
 q6_param = reqparse.RequestParser()
 q6_param.add_argument('format', type=str,
@@ -163,7 +161,12 @@ class Actors(Resource):
         """Question 1 Create an Actor in database
         """
         actor = q1_name.parse_args()['name']
-        actor_name = re.sub('-|_', ' ', actor)
+        actor_name = ''
+        for i in actor:
+            if i.isalpha() or i.isdigit():
+                actor_name += i
+            else:
+                actor_name += ' '
         req_dict = request_data(f'https://api.tvmaze.com/search/people?q={actor_name}')
         if not req_dict: return  {'message': 'The actor is not found'}, 404
         if check_vaild_name(actor_name,req_dict):
@@ -206,7 +209,7 @@ class Actors(Resource):
     @api.expect(q5_param)
     @api.doc(responses={200: 'OK', 400: 'Bad Request', 404: 'Not Found'},
              description='The inputs of order and filter can be only chosen from the following list: '
-                         ' {id, name, country, birthday, deathday, last-update}')
+                         ' {id, name, country, birthday, deathday, last-update, shows}')
     def get(self):
         """Question 5 Retrieve the list of available Actors
         """
@@ -318,13 +321,22 @@ class Actors(Resource):
             data = json.loads(request.data)
             actor = ActorsInfo.query.filter_by(id=id)
             isChanged = False
-            for i in ['name', 'country', 'birthday', 'deathday', 'shows']:
+            attribute_list = ['name', 'country','gender', 'birthday', 'deathday', 'shows']
+            for value in data.keys():
+                if not value in attribute_list:
+                    return {'message': 'Input data is invalid'}, 400
+            for i in attribute_list:
                 if data.get(i):
                     if i == 'birthday' or i == 'deathday':
                         actor.update({i: str_to_time(data[i])})
                         isChanged = True
                     elif i == 'shows':
                         actor.update({i: "@%".join(data[i])})
+                        isChanged = True
+                    elif i == 'gender':
+                        if not data[i] in ['Female', 'Male', 'female', 'male', '', ' ']:
+                            return {'message': 'Gender can only be Female or Male'}, 400
+                        actor.update({i: data[i]})
                         isChanged = True
                     else:
                         actor.update({i: data[i]})
@@ -447,7 +459,6 @@ class Actors(Resource):
                     for a, b in zip(age_distrib.keys(), age_distrib.values()):
                         plt.text(a, b, b,ha='center',va='bottom',)
                     plt.xticks(list(age_distrib.keys()), age_distrib.keys())
-                    plt.ylim(0,350)
                     plt.title('The Age Distribution of Actors', weight='bold')
                     plt.xlabel('Age (per decade)')
                     plt.ylabel('Number of Actors')
